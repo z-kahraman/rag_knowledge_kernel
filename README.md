@@ -109,6 +109,26 @@ python main.py load_pdf /path/to/document.pdf --collection my_collection
 python main.py query "What is discussed in the document?"
 ```
 
+## 📸 Application Screenshots
+
+Here are some screenshots showcasing the main functionalities of Knowledge Kernel:
+
+### Document Upload Interface
+![Document Upload](./docs/images/upload_interface.png)
+*The interface for uploading and processing PDF documents*
+
+### Query Interface
+![Query Interface](./docs/images/query_interface.png)
+*Ask questions about your documents and get AI-powered answers*
+
+### Collection Management
+![Collection Management](./docs/images/collections.png)
+*Create and manage multiple document collections*
+
+### Statistics Dashboard
+![Statistics](./docs/images/statistics.png)
+*View detailed statistics about your collections*
+
 ## 📊 Project Status
 
 ### ✅ Implemented Features
