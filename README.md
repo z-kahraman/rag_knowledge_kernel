@@ -1,109 +1,148 @@
-# 🧠 BilgiÇekirdeği (Knowledge Kernel)
+# 🧠 Knowledge Kernel - RAG System for Document Querying
 
-BilgiÇekirdeği, dokümanlarınızı yapay zeka ile sorgulamanızı sağlayan açık kaynaklı bir bilgi erişim sistemidir. PDF belgelerinizi vektör veritabanına yükleyin ve doğal dil sorguları ile bilgiye ulaşın!
+![Knowledge Kernel Interface](./docs/images/arayuz.png)
 
-![BilgiÇekirdeği Arayüzü](./docs/images/arayuz.png)
+## 🌟 Overview
 
-## 🌟 Özellikler
+Knowledge Kernel is an open-source Retrieval Augmented Generation (RAG) system that enables you to query your documents using artificial intelligence. This project demonstrates the power of combining vector databases with large language models to create an effective document question-answering system.
 
-- 📄 PDF belgelerini vektör veritabanına indeksleme
-- ❓ Dokümanları doğal dil ile sorgulama
-- 🔄 OpenAI veya Ollama LLM modelleri desteği
-- 📊 Kullanıcı dostu web arayüzü
-- 📝 Yanıtlarınız için kaynak belgeleri görüntüleme
+## 📋 Why We Built This
 
-## 📋 Gereksinimler
+We created Knowledge Kernel to address several challenges in information retrieval:
 
-- Python 3.8 veya üzeri
-- Ollama (yerel AI modelleri için) veya OpenAI API anahtarı
-- Langchain ve ilgili bağımlılıklar
+1. **Information Overload**: Many organizations struggle with extracting relevant information from their large document repositories
+2. **Accessibility**: Technical barriers often prevent users from utilizing advanced AI capabilities
+3. **Flexibility**: Most existing solutions lock users into specific providers or models
+4. **Language Support**: Many RAG systems lack robust multilingual capabilities (we support both English and Turkish)
+5. **Local Deployment**: Privacy concerns often necessitate local processing of sensitive documents
 
-## 🚀 Kurulum
+Our goal was to create a user-friendly RAG system that could be easily deployed locally, work with multiple LLM providers, and deliver accurate answers from user documents.
 
-1. Depoyu klonlayın:
+## 🛠️ How We Built It
+
+Knowledge Kernel is built on a modular architecture:
+
+1. **Document Processing**: We use LangChain's document loaders to process PDF files, breaking them into manageable chunks
+2. **Vector Embeddings**: Document chunks are converted to vector embeddings using models from OpenAI or Ollama
+3. **Vector Database**: FAISS is used to store and efficiently retrieve these embeddings
+4. **Query Processing**: User questions are processed through a RAG chain that:
+   - Converts the question to a vector
+   - Finds the most relevant document chunks
+   - Sends these chunks along with the question to an LLM
+   - Returns a contextualized answer with source references
+5. **User Interface**: A clean Streamlit interface makes the system accessible to non-technical users
+6. **Multilingual Support**: Complete localization system for English and Turkish
+
+## 🔍 Key Features
+
+- 📄 PDF document indexing to vector database
+- 🔄 Flexible embedding model selection (OpenAI, Ollama)
+- 🤖 Multiple LLM provider support (OpenAI, Ollama)
+- 🌐 Multilingual interface and responses (English, Turkish)
+- 📊 Collection management and statistics
+- 🔍 Natural language querying with source citations
+- 💻 Both web interface and command line options
+
+## 🚀 Getting Started
+
+### Prerequisites
+
+- Python 3.8 or higher
+- For local models: [Ollama](https://ollama.ai/)
+- For OpenAI models: An OpenAI API key
+
+### Installation
+
+1. Clone this repository:
 ```bash
-git clone https://github.com/kullanici/bilgicekirdegi.git
-cd bilgicekirdegi
+git clone https://github.com/yourusername/knowledge_kernel.git
+cd knowledge_kernel
 ```
 
-2. Python sanal ortamı oluşturun ve bağımlılıkları yükleyin:
+2. Create a virtual environment and install dependencies:
 ```bash
 python -m venv venv
 source venv/bin/activate  # Linux/Mac
-# veya
+# or
 venv\Scripts\activate  # Windows
 
 pip install -r requirements.txt
 ```
 
-3. (İsteğe Bağlı) Ollama kurulumu:
-Yerel AI modelleri kullanmak için [Ollama'yı](https://ollama.ai/) indirin ve kurun.
+3. (Optional) For Ollama users, install and pull a model:
 ```bash
+# Install Ollama from https://ollama.ai/
 ollama pull llama3.2:latest
 ```
 
-4. (İsteğe Bağlı) OpenAI API anahtarı ayarlayın:
+4. (Optional) For OpenAI users, set your API key:
 ```bash
-# .env dosyası oluşturun
 echo "OPENAI_API_KEY=your_api_key_here" > .env
 ```
 
-## 🖥️ Kullanım
+### Usage
 
-### Web Arayüzü ile Kullanım
+#### Web Interface
 
-1. Streamlit arayüzünü başlatın:
+1. Start the web application:
 ```bash
 streamlit run app.py
 ```
 
-2. Tarayıcıda http://localhost:8501 adresine gidin.
+2. Open your browser to http://localhost:8501
 
-3. "Doküman Yükleme" sekmesinden PDF belgelerinizi yükleyin.
+3. Use the interface to:
+   - Upload PDF documents
+   - Create and manage collections
+   - Ask questions about your documents
+   - View detailed statistics
 
-4. "Soru Sorma" sekmesinden dokümanlarınıza sorular sorun.
+#### Command Line
 
-### Komut Satırı ile Kullanım
+For those who prefer command line:
 
-1. PDF belgesini yüklemek için:
 ```bash
-python main.py load_pdf /path/to/your/document.pdf --collection documents
+# Upload a document
+python main.py load_pdf /path/to/document.pdf --collection my_collection
+
+# Query your documents
+python main.py query "What is discussed in the document?"
 ```
 
-2. Dokümanları sorgulamak için:
-```bash
-python main.py query "Sorgunuz buraya"
-```
+## 📊 Project Status
 
-## 🛠️ Proje Yapısı
+### ✅ Implemented Features
+- [x] PDF document processing and vectorization
+- [x] Document collection management
+- [x] Natural language document querying
+- [x] Automatic cleanup of temporary files
+- [x] Support for both OpenAI and Ollama models
+- [x] Multilingual interface (English and Turkish)
+- [x] Statistics view for collections
+- [x] Source citation for answers
+- [x] Caching system for faster repeat queries
 
-```
-bilgicekirdegi/
-├── app.py                # Streamlit web arayüzü
-├── main.py               # Komut satırı arayüzü
-├── ingestion/            # Doküman yükleme modülleri
-│   └── load_pdf.py       # PDF yükleme ve işleme
-├── vectorstore/          # Vektör veritabanı modülleri
-│   └── vector_db.py      # FAISS vektör veritabanı
-├── embeddings/           # Embedding modülleri
-│   └── embedder.py       # Doküman vektörleştirme
-├── qa/                   # Soru-cevap modülleri
-│   └── rag_chain.py      # RAG (Retrieval Augmented Generation) zinciri
-├── utils/                # Yardımcı modüller
-│   └── logging_config.py # Loglama yapılandırması
-├── indices/              # Vektör indeksleri
-└── logs/                 # Log dosyaları
-```
+### 📝 Planned Features
+- [ ] Support for additional document formats (DOCX, TXT, etc.)
+- [ ] Advanced query techniques (HyDE, query transformation)
+- [ ] User feedback mechanisms for answer improvement
+- [ ] Collection backup and restore utilities
+- [ ] Customizable chunking strategies
+- [ ] Performance optimizations for larger document sets
+- [ ] API endpoint for integration with other applications
 
-## 🤝 Katkıda Bulunma
+## 🤝 Contributing
 
-Katkılarınızı bekliyoruz! Lütfen bir issue açın veya pull request gönderin.
+Contributions are welcome! Please feel free to submit a Pull Request.
 
-## 📜 Lisans
+## 📜 License
 
-Bu proje MIT lisansı altında lisanslanmıştır. Detaylar için `LICENSE` dosyasına bakın.
+This project is licensed under the MIT License - see the LICENSE file for details.
 
-## 👥 İletişim
+## 📞 Contact
 
-- GitHub: [@kullanici](https://github.com/kullanici)
-- E-posta: ornek@email.com 
+For questions or feedback, please open an issue on GitHub.
+
+---
+
+Happy querying! 🚀 

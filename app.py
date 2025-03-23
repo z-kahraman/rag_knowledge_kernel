@@ -1,8 +1,13 @@
 """
-BilgiÇekirdeği Streamlit Arayüzü
--------------------------------
-Bu modül, BilgiÇekirdeği uygulaması için bir web arayüzü sunar.
-PDF dokümanlarını yükleme, indeksleme ve sorgu yapma işlevleri içerir.
+BilgiÇekirdeği - Kişisel Dokümanları Yapay Zeka ile Sorgulama Sistemi
+--------------------------------------------------------------
+Bu uygulama, dokümanlarınızı yerel ve çevrimiçi yapay zeka modelleri ile
+sorgulamanızı sağlayan açık kaynaklı bir bilgi erişim sistemidir.
+
+Knowledge Kernel - Personal Document AI Query System
+--------------------------------------------------------------
+This application is an open-source information retrieval system that allows you to query
+your documents using local and online artificial intelligence models.
 """
 
 import os
@@ -15,6 +20,61 @@ import tempfile
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 import pandas as pd
+import glob
+import atexit
+import shutil
+import uuid
+import re
+
+# Dil desteği için çeviri modülünü içe aktar
+# Import translation module for language support
+from localization.translations import get_text, DEFAULT_LANGUAGE
+
+# Geçici dosyaların yönetimi için fonksiyonlar
+TEMP_DIR = "./temp_files"
+
+def setup_temp_directory():
+    """Geçici dosyalar için dizin oluşturur"""
+    os.makedirs(TEMP_DIR, exist_ok=True)
+    return TEMP_DIR
+
+def cleanup_temp_files():
+    """Mevcut geçici PDF dosyalarını ana dizinden temizler"""
+    # Ana dizindeki temp_*.pdf dosyalarını temizle
+    for temp_file in glob.glob("temp_*.pdf"):
+        try:
+            os.remove(temp_file)
+            print(f"Geçici dosya temizlendi: {temp_file}")
+        except Exception as e:
+            print(f"Dosya temizlenirken hata: {e}")
+    
+    # Eğer varsa temp_files dizinindeki dosyaları temizle
+    if os.path.exists(TEMP_DIR):
+        for temp_file in glob.glob(os.path.join(TEMP_DIR, "*")):
+            try:
+                os.remove(temp_file)
+                print(f"Geçici dosya temizlendi: {temp_file}")
+            except Exception as e:
+                print(f"Dosya temizlenirken hata: {e}")
+
+def exit_handler():
+    """Uygulama kapatılırken çalışacak temizleme işlevi"""
+    print("Uygulama kapatılıyor, geçici dosyalar temizleniyor...")
+    cleanup_temp_files()
+    # İsteğe bağlı: Geçici dizini tamamen kaldırma
+    if os.path.exists(TEMP_DIR):
+        try:
+            shutil.rmtree(TEMP_DIR)
+            print(f"{TEMP_DIR} dizini silindi")
+        except Exception as e:
+            print(f"Dizin silinirken hata: {e}")
+
+# Başlangıçta geçici dosyaları temizle
+cleanup_temp_files()
+# Geçici dosyalar için dizin oluştur
+setup_temp_directory()
+# Uygulama kapanırken temizleme işlevini kaydet
+atexit.register(exit_handler)
 
 # BilgiÇekirdeği modülleri
 from vectorstore.vector_db import VectorDatabase
@@ -22,11 +82,42 @@ from ingestion.load_pdf import load_pdf
 from qa.rag_chain import RAGChain
 from utils.logging_config import setup_logging, get_logger
 from load_pdf import load_pdf_document
-from run_query import run_query, clear_query_cache, clear_rag_cache
+from run_query import run_query, clear_query_cache, clear_rag_cache, clear_collection_cache
 
 # Loglama yapılandırmasını etkinleştir
 setup_logging()
 logger = get_logger(__name__)
+
+# Dil ve çeviri fonksiyonları
+# Language and translation functions
+
+def get_current_language():
+    """
+    Geçerli dil kodunu döndürür. Varsayılan "tr" (Türkçe).
+    
+    Returns the current language code. Default is "tr" (Turkish).
+    """
+    return st.session_state.get("language", DEFAULT_LANGUAGE)
+
+def t(key):
+    """
+    Geçerli dil için çeviriyi döndürür.
+    
+    Args:
+        key: Metin anahtarı
+        
+    Returns:
+        str: Çevrilmiş metin
+    
+    Returns the translation for the current language.
+    
+    Args:
+        key: Text key
+        
+    Returns:
+        str: Translated text
+    """
+    return get_text(key, get_current_language())
 
 # Yardımcı Fonksiyonlar
 def get_ollama_models(base_url="http://localhost:11434"):
@@ -74,7 +165,7 @@ def save_collection_metadata(collection_name, metadata):
 
 def load_collection_metadata(collection_name):
     """
-    Koleksiyon metadata bilgilerini yükler.
+    Koleksiyon metadata bilgilerini yükler ve eksik bilgileri varsayılan değerlerle doldurur.
     
     Args:
         collection_name: Koleksiyon adı
@@ -84,13 +175,53 @@ def load_collection_metadata(collection_name):
     """
     try:
         metadata_file = os.path.join("./indices", collection_name, "metadata", "collection_info.json")
+        metadata = {}
+        
         if os.path.exists(metadata_file):
             with open(metadata_file, 'r') as f:
-                return json.load(f)
-        return {}
+                metadata = json.load(f)
+        
+        # Metadata bulunamamışsa veya boşsa
+        if not metadata:
+            logger.warning(f"Metadata bulunamadı veya boş: {collection_name}")
+            return {
+                "created_date": t("unknown"),
+                "num_documents": 0,
+                "num_vectors": 0,
+                "chunk_size": t("unknown"),
+                "chunk_overlap": t("unknown"),
+                "embedding_type": t("unknown"),
+                "embedding_model": t("unknown")
+            }
+        
+        # Eksik alanları varsayılan değerlerle doldur
+        default_values = {
+            "created_date": t("unknown"),
+            "num_documents": 0,
+            "num_vectors": 0,
+            "chunk_size": t("unknown"),
+            "chunk_overlap": t("unknown"),
+            "embedding_type": metadata.get("embedding_provider", t("unknown")),
+            "embedding_model": t("unknown")
+        }
+        
+        # Metadata'daki eksik alanları doldur
+        for key, value in default_values.items():
+            if key not in metadata or metadata[key] is None or metadata[key] == "":
+                metadata[key] = value
+        
+        return metadata
     except Exception as e:
         logger.error(f"Metadata yüklenirken hata: {str(e)}")
-        return {}
+        return {
+            "created_date": t("unknown"),
+            "num_documents": 0,
+            "num_vectors": 0,
+            "chunk_size": t("unknown"), 
+            "chunk_overlap": t("unknown"),
+            "embedding_type": t("unknown"),
+            "embedding_model": t("unknown")
+        }
 
 # Varsayılan değerler
 DEFAULT_COLLECTION = "documents"
@@ -106,6 +237,11 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# Session state başlatma
+# Initialize session state
+if "language" not in st.session_state:
+    st.session_state["language"] = DEFAULT_LANGUAGE
 
 # CSS stilleri ekle - Koyu tema için güncellendi
 st.markdown("""
@@ -202,42 +338,51 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Başlık ve açıklama
-st.markdown('<h1 class="main-header">BilgiÇekirdeği</h1>', unsafe_allow_html=True)
-st.markdown('<p class="sub-header">PDF dokümanlarını yükleyin, indeksleyin ve sorular sorun. BilgiÇekirdeği, yapay zeka ile dokümanlarınızdaki bilgiye erişmenizi sağlar.</p>', unsafe_allow_html=True)
-
-# Arka planda Ollama modellerini yükle
-if 'ollama_models' not in st.session_state:
-    st.session_state['ollama_models'] = get_ollama_models()
-
-# Yan menü
+# Kenar çubuğunda dil seçimi ekle
+# Add language selection in the sidebar
 with st.sidebar:
-    st.markdown('<h2 style="color:#2196F3; font-weight:600;">BilgiÇekirdeği</h2>', unsafe_allow_html=True)
+    # Uygulama bilgileri
+    st.image("https://raw.githubusercontent.com/twitter/twemoji/master/assets/svg/1f9e0.svg", width=50)
     
-    # Logo için geçici bir çözüm
-    try:
-        st.image("./static/logo.png", width=150)
-    except:
-        st.markdown('<div style="text-align:center; font-size:3.5rem; margin-bottom:20px;">🧠</div>', unsafe_allow_html=True)
+    # Uygulama adı - Mevcut dile göre
+    st.title(t("app_title"))
     
-    st.markdown('<hr style="margin-top:0;">', unsafe_allow_html=True)
+    # Dil seçimi
+    st.subheader(t("settings_language"))
+    language_col1, language_col2 = st.columns(2)
+    
+    with language_col1:
+        if st.button("🇹🇷 " + t("settings_language_turkish"), use_container_width=True, 
+                   disabled=get_current_language()=="tr"):
+            st.session_state["language"] = "tr"
+            st.success(t("settings_language_change"))
+            st.rerun()
+    
+    with language_col2:
+        if st.button("🇬🇧 " + t("settings_language_english"), use_container_width=True,
+                   disabled=get_current_language()=="en"):
+            st.session_state["language"] = "en"
+            st.success(t("settings_language_change"))
+            st.rerun()
+    
+    st.divider()
     
     # Ayarlar bölümü
-    st.markdown('<h3 style="color:#e0e0e0; font-weight:600; font-size:1.3rem;">⚙️ Ayarlar</h3>', unsafe_allow_html=True)
+    st.markdown(f'<h3 style="color:#e0e0e0; font-weight:600; font-size:1.3rem;">⚙️ {t("settings_title")}</h3>', unsafe_allow_html=True)
     
     # Koleksiyon adı
-    st.markdown('<p style="font-weight:500; margin-bottom:5px;">Koleksiyon Adı</p>', unsafe_allow_html=True)
+    st.markdown(f'<p style="font-weight:500; margin-bottom:5px;">{t("upload_collection_label")}</p>', unsafe_allow_html=True)
     collection_name = st.text_input(
-        label="Koleksiyon Adı",
+        label=t("upload_collection_label"),
         value=DEFAULT_COLLECTION, 
         key="collection_name_input", 
         label_visibility="collapsed"
     )
     
     # LLM Ayarları
-    with st.expander("🤖 LLM Ayarları", expanded=True):
+    with st.expander(f"🤖 {t('settings_llm_section')}", expanded=True):
         llm_provider = st.selectbox(
-            "LLM Sağlayıcı", 
+            t("settings_llm_provider"), 
             ["ollama", "openai"], 
             index=0,
             key="llm_provider_select"
@@ -254,7 +399,7 @@ with st.sidebar:
             ollama_models = st.session_state.get('ollama_models', [])
             if ollama_models:
                 llm_model = st.selectbox(
-                    "Ollama Model", 
+                    t("settings_llm_model"), 
                     options=ollama_models,
                     index=ollama_models.index(LLM_MODEL) if LLM_MODEL in ollama_models else 0,
                     help="Ollama üzerinde yüklü olan modellerden birini seçin",
@@ -262,7 +407,7 @@ with st.sidebar:
                 )
             else:
                 llm_model = st.text_input(
-                    "Ollama Model", 
+                    t("settings_llm_model"), 
                     LLM_MODEL,
                     help="Ollama API'ye ulaşılamadı. Model adını manuel olarak girin.",
                     key="ollama_model_input"
@@ -274,22 +419,22 @@ with st.sidebar:
                 )
         else:
             llm_model = st.selectbox(
-                "OpenAI Model", 
+                t("settings_llm_model"), 
                 ["gpt-3.5-turbo", "gpt-4"], 
                 index=0,
                 help="OpenAI'nin üretimde olan modellerinden birini seçin",
                 key="openai_model_select"
             )
             openai_api_key = st.text_input(
-                "OpenAI API Anahtarı", 
+                t("settings_openai_api_key"), 
                 type="password",
                 key="openai_api_key_input"
             )
     
     # Embedding Ayarları
-    with st.expander("🧬 Embedding Ayarları", expanded=True):
+    with st.expander(f"🧬 {t('settings_embedding_section')}", expanded=True):
         embedding_provider = st.selectbox(
-            "Embedding Sağlayıcı", 
+            t("settings_embedding_provider"), 
             ["ollama", "openai", "instructor"], 
             index=0,
             help="Metinleri vektörlere dönüştürmek için kullanılacak servis.",
@@ -370,78 +515,147 @@ with st.sidebar:
         )
 
     # Bilgi kutucuğu
-    st.markdown('<div class="info-box"><strong>⚠️ Önemli Not:</strong> Vektör veritabanı oluştururken kullandığınız embedding modeli ile sorgu yaparken aynı modeli kullanmanız gerekir. Aksi halde boyut uyuşmazlığı hatası alırsınız.</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="info-box"><strong>⚠️ {t("important_note")}</strong> {t("embedding_model_warning")}</div>', unsafe_allow_html=True)
     
     # Koleksiyon bilgileri
-    st.markdown('<h3 style="color:#424242; font-weight:600; font-size:1.3rem; margin-top:20px;">📚 Koleksiyonlar</h3>', unsafe_allow_html=True)
+    st.markdown(f'<h3 style="color:#424242; font-weight:600; font-size:1.3rem; margin-top:20px;">📚 {t("collections_title")}</h3>', unsafe_allow_html=True)
     
     # İndeks bilgilerini göster
     vector_db = VectorDatabase()
     try:
         collections = vector_db.list_collections()
         if collections:
-            st.success(f"{len(collections)} koleksiyon bulundu")
+            st.success(f"{len(collections)} {t('collection_found')}")
             for collection in collections:
                 # Metadata'yı yükle
                 metadata = load_collection_metadata(collection)
                 if metadata:
-                    model_info = f"({metadata.get('embedding_provider', '')}/{metadata.get('embedding_model', '')})"
-                    st.markdown(f'<div class="collection-card"><strong>{collection}</strong><br/><small>{model_info}</small></div>', unsafe_allow_html=True)
+                    model_info = f"({metadata.get('embedding_provider', '')}/" \
+                                 f"{metadata.get('embedding_model', '')})"
+                    st.markdown(f'<div class="collection-card"><strong>{collection}</strong><br/>' \
+                                f'<small>{model_info}</small></div>', unsafe_allow_html=True)
                 else:
                     st.markdown(f'<div class="collection-card"><strong>{collection}</strong></div>', unsafe_allow_html=True)
         else:
-            st.warning("Henüz bir koleksiyon oluşturulmamış")
+            st.warning(t("no_collections_warning"))
     except Exception as e:
-        st.error(f"Koleksiyonlar yüklenirken hata: {str(e)}")
+        st.error(f"{t('collections_load_error')}: {str(e)}")
 
-# Ana sekmeleri oluştur
-tab1, tab2, tab3, tab4 = st.tabs(["📄 Doküman Yükleme", "❓ Soru Sorma", "📋 Koleksiyon İçeriği", "📊 Koleksiyon İstatistikleri"])
+# Başlık ve açıklama
+st.markdown(f'<h1 class="main-header">{t("app_title")}</h1>', unsafe_allow_html=True)
+st.markdown(f'<p class="sub-header">{t("welcome_text")}</p>', unsafe_allow_html=True)
 
-# 1. Doküman Yükleme Sekmesi
+# Arka planda Ollama modellerini yükle
+if 'ollama_models' not in st.session_state:
+    st.session_state['ollama_models'] = get_ollama_models()
+
+# Sekmeler
+# Aktif sekmeyi belirle
+active_tab_index = 0  # Varsayılan olarak ilk sekme (Ana Sayfa)
+if "active_tab" in st.session_state:
+    active_tab_index = st.session_state["active_tab"]
+    del st.session_state["active_tab"]  # Kullanıldıktan sonra temizle
+
+# Sekmeleri oluştur
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    f"📄 {t('menu_home')}", 
+    f"📥 {t('menu_pdf_upload')}", 
+    f"❓ {t('menu_ask')}", 
+    f"📚 {t('menu_collections')}", 
+    f"📊 {t('collections_stats')}"
+])
+
+# Aktif sekmeye göre içeriği göster
+# 1. Ana Sayfa Sekmesi
 with tab1:
-    st.header("PDF Dokümanı Yükle")
+    st.header(t("welcome_title"))
+    
+    # Ana sayfa bilgileri ve hoş geldin mesajı
+    st.markdown(f"### {t('home_subtitle')}")
+    st.markdown(t("home_description"))
+    
+    # İki sütunlu düzen
+    home_col1, home_col2 = st.columns([3, 2])
+    
+    with home_col1:
+        # Kullanıcı bilgi kartı
+        st.markdown(f"""
+        <div style="background-color: #1a273a; padding: 15px; border-radius: 5px; margin-bottom: 20px; border-left: 4px solid #2196F3;">
+            <h4 style="color: #42a5f5; margin-top: 0;">{t("app_usage_title")}</h4>
+            <p>1. "{t('menu_pdf_upload')}" {t("app_usage_step1")}</p>
+            <p>2. "{t('menu_ask')}" {t("app_usage_step2")}</p>
+            <p>3. "{t('menu_collections')}" {t("app_usage_step3")}</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        st.markdown(t("home_get_started"))
+    
+    with home_col2:
+        # Logo ve görsel öğeler
+        st.image("https://raw.githubusercontent.com/twitter/twemoji/master/assets/svg/1f9e0.svg", width=150)
+        
+        # Sürüm bilgisi
+        st.markdown(f"**{t('app_version')} v1.0.0**")
+        
+        # GitHub linki
+        st.markdown("[GitHub](https://github.com/user/knowledge_kernel) • [Docs](https://github.com/user/knowledge_kernel/docs)")
+
+# 2. Doküman Yükleme Sekmesi
+with tab2:
+    st.header(t("upload_title"))
+    st.markdown(t("upload_description"))
     
     # İki sütunlu düzen
     col1, col2 = st.columns([3, 2])
     
     with col1:
         # Kullanıcı bilgi kartı
-        st.markdown("""
+        st.markdown(f"""
         <div style="background-color: #1a273a; padding: 15px; border-radius: 5px; margin-bottom: 20px; border-left: 4px solid #2196F3;">
-            <h4 style="color: #42a5f5; margin-top: 0;">PDF Dokümanı Nasıl Yüklenir?</h4>
-            <p>1. Yüklemek istediğiniz PDF dosyasını seçin</p>
-            <p>2. "Yükle" butonuna tıklayın</p>
-            <p>3. Yüklenen dosyayı vektör veritabanına ekleyin</p>
+            <h4 style="color: #42a5f5; margin-top: 0;">{t("pdf_upload_instructions_title")}</h4>
+            <p>1. {t("process_step_1")}</p>
+            <p>2. {t("process_step_2")}</p>
+            <p>3. {t("process_step_3")}</p>
+            <p>4. {t("process_step_4")}</p>
+            <p>5. {t("process_step_5")}</p>
+            <p>6. {t("process_step_6")}</p>
         </div>
         """, unsafe_allow_html=True)
         
         uploaded_file = st.file_uploader(
-            "PDF Yükle", 
+            t("upload_button"), 
             type="pdf",
             key="pdf_uploader"
         )
         
         if uploaded_file is not None:
-            # Geçici dosyayı kaydet ve işle
-            file_path = f"temp_{int(time.time())}.pdf"
+            # Geçici dosyayı TEMP_DIR dizinine kaydet ve işle
+            temp_filename = f"temp_{int(time.time())}_{uploaded_file.name}"
+            file_path = os.path.join(TEMP_DIR, temp_filename)
+            
             with open(file_path, "wb") as f:
                 f.write(uploaded_file.getbuffer())
             
-            st.success(f"'{uploaded_file.name}' başarıyla yüklendi! Şimdi vektör veritabanına ekleyebilirsiniz.")
+            st.success(f"'{uploaded_file.name}' {t('upload_success')}! {t('file_upload_prompt')}")
+            
+            # Session state'e dosya yolunu kaydet (daha sonra silinebilir)
+            if 'temp_files' not in st.session_state:
+                st.session_state['temp_files'] = []
+            st.session_state['temp_files'].append(file_path)
             
             process_col1, process_col2 = st.columns([1, 1])
             
             with process_col1:
                 # Yükleme düğmesi
                 process_button = st.button(
-                    "PDF'yi İşle ve Ekle", 
+                    t("upload_process_button"), 
                     use_container_width=True,
                     key="isle_button"
                 )
             with process_col2:
                 # İptal düğmesi
                 cancel_button = st.button(
-                    "İptal", 
+                    t("upload_cancel_button"), 
                     use_container_width=True,
                     key="iptal_button"
                 )
@@ -465,34 +679,56 @@ with tab1:
                             st.success("PDF başarıyla işlendi ve vektör veritabanına eklendi!")
                             # Sonuçları göster
                             st.json(result)
-                            # Temporary file temizliği
-                            if os.path.exists(file_path):
-                                os.remove(file_path)
+                            # Geçici dosyayı temizle
+                            try:
+                                if os.path.exists(file_path):
+                                    os.remove(file_path)
+                                    print(f"Geçici dosya başarıyla silindi: {file_path}")
+                                # Session state'den dosya yolunu kaldır
+                                if 'temp_files' in st.session_state and file_path in st.session_state['temp_files']:
+                                    st.session_state['temp_files'].remove(file_path)
+                            except Exception as e:
+                                print(f"Geçici dosya silinirken hata: {str(e)}")
                         else:
                             st.error("PDF işlenirken bir hata oluştu.")
                     except Exception as e:
                         st.error(f"Hata: {str(e)}")
-                        logger.error(f"PDF yüklenirken hata: {str(e)}")
+                        # Hata durumunda da geçici dosyayı temizlemeyi dene
+                        try:
+                            if os.path.exists(file_path):
+                                os.remove(file_path)
+                                print(f"Hata sonrası geçici dosya silindi: {file_path}")
+                            # Session state'den dosya yolunu kaldır
+                            if 'temp_files' in st.session_state and file_path in st.session_state['temp_files']:
+                                st.session_state['temp_files'].remove(file_path)
+                        except Exception as cleanup_error:
+                            print(f"Hata durumunda geçici dosya silinirken hata: {str(cleanup_error)}")
             
-            elif cancel_button:
-                # Temporary file temizliği
-                if os.path.exists(file_path):
-                    os.remove(file_path)
-                st.info("İşlem iptal edildi.")
-                st.rerun()
+            if cancel_button:
+                # İptal edilirse geçici dosyayı temizle
+                try:
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                        st.success(f"İşlem iptal edildi ve geçici dosya silindi.")
+                    # Session state'den dosya yolunu kaldır
+                    if 'temp_files' in st.session_state and file_path in st.session_state['temp_files']:
+                        st.session_state['temp_files'].remove(file_path)
+                except Exception as e:
+                    st.error(f"Geçici dosya silinirken hata: {str(e)}")
+                st.rerun()  # Sayfayı yenile
     
     with col2:
         # İşlem sonuçları ve bilgiler burada gösterilecek
         if uploaded_file is None:
-            st.markdown("""
+            st.markdown(f"""
             <div style="background-color: #2c2c00; padding: 15px; border-radius: 5px; margin-bottom: 20px; border-left: 4px solid #FFD600;">
-                <h4 style="color: #FFD600; margin-top: 0;">BilgiÇekirdeği Nasıl Çalışır?</h4>
-                <p>1. Yüklenen PDF dosyaları küçük parçalara bölünür</p>
-                <p>2. Her parça vektör temsillere dönüştürülür</p>
-                <p>3. Vektörler veritabanında saklanır</p>
-                <p>4. Sorularınız benzer şekilde vektörlere dönüştürülür</p>
-                <p>5. En ilgili doküman parçaları bulunur</p>
-                <p>6. Yapay zeka doküman parçalarını kullanarak yanıt üretir</p>
+                <h4 style="color: #FFD600; margin-top: 0;">{t("pdf_upload_instructions_title")}</h4>
+                <p>1. {t("process_step_1")}</p>
+                <p>2. {t("process_step_2")}</p>
+                <p>3. {t("process_step_3")}</p>
+                <p>4. {t("process_step_4")}</p>
+                <p>5. {t("process_step_5")}</p>
+                <p>6. {t("process_step_6")}</p>
             </div>
             """, unsafe_allow_html=True)
         else:
@@ -508,20 +744,31 @@ with tab1:
             </div>
             """, unsafe_allow_html=True)
 
-# 2. Soru Sorma Sekmesi
-with tab2:
-    st.header("Dokümanlara Soru Sor")
+# 3. Soru Sorma Sekmesi 
+with tab3:
+    # Eğer sorgu sekmesine yönlendirme varsa, bilgi mesajı göster
+    if st.session_state.get("redirect_to_query", False):
+        st.info(f"'{st.session_state.get('selected_collection', 'documents')}' koleksiyonuna sorgu yapabilirsiniz.")
+        # Yönlendirme durumunu sıfırla
+        st.session_state["redirect_to_query"] = False
+        
+    st.header(t("ask_title"))
+    st.markdown(t("ask_description"))
     
     # İki sütunlu düzen
     query_col1, query_col2 = st.columns([3, 2])
     
     with query_col1:
         # Sorgu alanı
-        st.markdown('<p style="font-weight:500; margin-bottom:5px;">Sorunuzu Girin</p>', unsafe_allow_html=True)
+        st.markdown('<p style="font-weight:500; margin-bottom:5px;">' + t("ask_enter_question") + '</p>', unsafe_allow_html=True)
         
         # Session state'teki sorguyu başlangıçta al
         if 'query' not in st.session_state:
             st.session_state['query'] = ""
+        
+        # Örnek soru seçim izleyicisi
+        if 'last_selected_question' not in st.session_state:
+            st.session_state['last_selected_question'] = None
             
         # Sorgu değiştiğinde bu fonksiyon çalışacak
         def on_query_change():
@@ -529,10 +776,10 @@ with tab2:
         
         # Sorgu alanı
         query = st.text_area(
-            label="Soru",
+            label=t("ask_question"),
             value=st.session_state.get('query', ''),
             height=120, 
-            placeholder="Dokümanlarınıza sormak istediğiniz soruyu buraya yazın...", 
+            placeholder=t("ask_placeholder"), 
             label_visibility="collapsed",
             key="soru_input",
             on_change=on_query_change  # Değişiklik olduğunda bu fonksiyonu çağır
@@ -548,7 +795,7 @@ with tab2:
         with button_col1:
             # Sorgu düğmesi
             ask_button = st.button(
-                "🔍 Soru Sor", 
+                f"🔍 {t('ask_button')}", 
                 use_container_width=True, 
                 type="primary",
                 key="soru_sor_button"
@@ -557,34 +804,58 @@ with tab2:
         with button_col2:
             # Temizle düğmesi
             clear_button = st.button(
-                "🧹 Temizle", 
+                f"🧹 {t('clear_button')}", 
                 use_container_width=True,
                 key="temizle_button"
             )
+
+        # Örnek soru bölümünü butonlardan sonra doğrudan yerleştir
+        # Örnek soru dropdown menüsü - her zaman görünür
+        example_questions = [
+            # Genel sorular - doküman inceleme
+            t("example_question_1"),
+            t("example_question_2"),
+            t("example_question_3"),
+            t("example_question_4"),
+            t("example_question_5"),
+            t("example_question_6"),
             
-        with button_col3:
-            # Örnek soru düğmesi
-            example_button = st.button(
-                "📝 Örnek Soru", 
-                use_container_width=True,
-                key="ornek_soru_button"
-            )
+            # Alan bazlı spesifik sorular
+            t("example_question_7"),
+            t("example_question_8"),
+            t("example_question_9"),
+            t("example_question_10"),
             
-        # Eğer örnek soru istenirse
-        if example_button:
-            example_questions = [
-                "Bu dokümanda bahsedilen en önemli konular nelerdir?",
-                "İK süreçlerinin online olarak yönetilmesi için neler yapılmalıdır?",
-                "Doğru adayı bulmak için hangi stratejiler önerilmiştir?",
-                "GDPR düzenlemeleri hakkında ne söyleniyor?",
-                "Matrisler ve yetkinlik matrisleri nasıl hazırlanır?"
-            ]
-            import random
-            selected_query = random.choice(example_questions)
-            # Burada doğrudan session state'e atıyoruz ve sayfayı yeniliyoruz
-            st.session_state['query'] = selected_query
-            st.rerun()
+            # Kullanım senaryolarına göre sorular
+            t("example_question_11"),
+            t("example_question_12"),
+            t("example_question_13"),
+        ]
+        
+        # Dropdown ile soru seçimi - seçim yapıldığında callback'i tetikleyecek
+        def on_example_select():
+            # Seçilen değer varsa ve öncekinden farklıysa
+            if st.session_state.example_question_select and st.session_state.example_question_select != st.session_state.get('last_selected_question'):
+                # Son seçilen soruyu güncelle
+                st.session_state['last_selected_question'] = st.session_state.example_question_select
+                # Soru metnini güncelle
+                st.session_state.query = st.session_state.example_question_select
+                st.session_state.soru_input = st.session_state.example_question_select
             
+        # Dropdown ile soru seçimi
+        selected_question = st.selectbox(
+            t("example_question_select_prompt"),
+            options=example_questions,
+            index=None,
+            placeholder=t("example_question_select_placeholder"),
+            key="example_question_select",
+            on_change=on_example_select  # Değişiklikte callback çağır
+        )
+        
+        # Seçilen soruysa bilgi ver
+        if selected_question and selected_question == st.session_state.get('last_selected_question'):
+            st.info(f"{t('selected_question')}: {selected_question}")
+        
         # Eğer temizle istenirse
         if clear_button:
             # Burada doğrudan session state'i temizliyoruz ve sayfayı yeniliyoruz
@@ -603,22 +874,40 @@ with tab2:
             st.session_state['current_query'] = current_query
             
             # Daha önce aynı soru sorulmuş mu kontrol et
-            from run_query import clear_query_cache, clear_rag_cache
+            from run_query import clear_query_cache, clear_rag_cache, clear_collection_cache
 
             # Gelişmiş ayarlara bakalım
-            with st.expander("Önbellek Ayarları", expanded=False):
-                use_cache = st.checkbox("Önbelleklemeyi Kullan", value=True, 
-                                        help="Aynı soruların daha hızlı yanıtlanması için önbellek kullan")
-                if st.button("Önbelleği Temizle"):
-                    clear_query_cache()
-                    clear_rag_cache()
-                    # Session state'ten de yanıtları temizle
-                    if 'answer' in st.session_state:
-                        del st.session_state['answer']
-                    if 'source_docs' in st.session_state:
-                        del st.session_state['source_docs']
-                    st.success("Tüm önbellekler temizlendi!")
-                    st.info("Yanıtlar temizlendi. Yeni bir sorgu yapabilirsiniz.")
+            with st.expander(t("cache_settings"), expanded=False):
+                use_cache = st.checkbox(t("use_cache"), value=True, 
+                                      help=t("cache_help"))
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    if st.button(t("clear_collection_cache")):
+                        # Sadece mevcut koleksiyonun önbelleğini temizle
+                        collection_name = st.session_state.get('selected_collection', 'documents')
+                        clear_collection_cache(collection_name)
+                        
+                        # Session state'ten de yanıtları temizle
+                        if 'answer' in st.session_state:
+                            del st.session_state['answer']
+                        if 'source_docs' in st.session_state:
+                            del st.session_state['source_docs']
+                        st.success(f"'{collection_name}' {t('collection_cache_cleared')}")
+                        st.info(t("answers_cleared"))
+                
+                with col2:
+                    if st.button(t("clear_all_caches")):
+                        clear_query_cache()
+                        clear_rag_cache()
+                        # Session state'ten de yanıtları temizle
+                        if 'answer' in st.session_state:
+                            del st.session_state['answer']
+                        if 'source_docs' in st.session_state:
+                            del st.session_state['source_docs']
+                        st.success(t("all_caches_cleared"))
+                        st.info(t("answers_cleared"))
             
             # İlerleme göstergesi başlat
             progress_placeholder = st.empty()
@@ -627,7 +916,7 @@ with tab2:
             # Zamanlayıcı başlat
             start_time = time.time()
             
-            with st.spinner("Yanıt oluşturuluyor... Bu işlem sistemin yüküne bağlı olarak 10-30 saniye sürebilir."):
+            with st.spinner(t("generating_answer")):
                 try:
                     # İlerleme göstergesi kademeli olarak ilerleyecek
                     for percent_complete in range(0, 101, 5):
@@ -640,12 +929,13 @@ with tab2:
                         else:
                             time.sleep(0.05)
                     
-                    # Sorgunun en güncel halini kullan
-                    final_query = st.session_state.get('current_query', current_query)
+                    # Mevcut dil tercihini al
+                    current_language = get_current_language()
+                    logger.info(f"Sorgu dili: {current_language}")
                     
                     # Sorguyu çalıştır
                     answer, source_docs = run_query(
-                        query=final_query,
+                        query=current_query,
                         embedding_provider=embedding_provider,
                         embedding_model=embedding_model,
                         llm_provider=llm_provider,
@@ -653,36 +943,37 @@ with tab2:
                         temperature=temperature,
                         top_k=top_k,
                         collection_name=collection_name,
-                        openai_api_key=openai_api_key if embedding_provider == "openai" or llm_provider == "openai" else None,
-                        use_cache=use_cache
+                        openai_api_key=openai_api_key if llm_provider == "openai" else None,
+                        use_cache=use_cache,
+                        language=current_language  # Dil bilgisini aktarıyoruz
                     )
                     
                     # İşlem süresini hesapla
                     elapsed_time = time.time() - start_time
                     
                     # Progress barı kaldır
-                    progress_placeholder.empty()
+                    progress_bar.empty()
                     
                     # Session state'e kaydet
                     st.session_state['answer'] = answer
                     st.session_state['source_docs'] = source_docs
                     
                     # Süre bilgisini göster
-                    st.info(f"Yanıt {elapsed_time:.2f} saniyede oluşturuldu" + 
-                           (" (önbellekten)" if elapsed_time < 1.0 and use_cache else ""))
+                    st.info(f"{t('answer_generated_in')} {elapsed_time:.2f} {t('seconds')}" + 
+                           (f" ({t('from_cache')})" if elapsed_time < 1.0 and use_cache else ""))
                     
                 except Exception as e:
-                    progress_placeholder.empty()
-                    st.error(f"Hata: {str(e)}")
-                    logger.error(f"Sorgu çalıştırılırken hata: {str(e)}")
+                    progress_bar.empty()
+                    st.error(f"{t('error')}: {str(e)}")
+                    logger.error(f"{t('query_error')}: {str(e)}")
 
     with query_col2:
         # Koleksiyon seçimi
-        with st.expander("Sorgu Ayarları", expanded=False):
+        with st.expander(t("query_settings"), expanded=False):
             collections = vector_db.list_collections()
             if collections:
                 selected_collection = st.selectbox(
-                    "Sorgulanacak Koleksiyon", 
+                    t("collection_to_query"), 
                     collections,
                     index=collections.index(collection_name) if collection_name in collections else 0,
                     key="sorgu_koleksiyon_secim"
@@ -699,22 +990,22 @@ with tab2:
                         embedding_type = metadata.get("embedding_type", "")
                         embedding_model = metadata.get("embedding_model", "")
                         if embedding_type and embedding_model:
-                            st.info(f"Bu koleksiyon {embedding_type} - {embedding_model} ile oluşturulmuş. "\
-                                    f"Sorgu yaparken uyumsuzluk hatalarını önlemek için otomatik olarak aynı model kullanılacak.")
+                            st.info(f"{t('collection_created_with')} {embedding_type} - {embedding_model}. "\
+                                    f"{t('using_same_model')}")
                 except:
                     pass
             else:
-                st.warning("Henüz hiç koleksiyon bulunmuyor. Lütfen önce bir doküman yükleyin.")
+                st.warning(t("no_collections"))
         
         # Bilgi kutusu - eğer henüz soru sorulmadıysa
         if 'answer' not in st.session_state or not st.session_state['answer']:
-            st.markdown("""
+            st.markdown(f"""
             <div style="background-color: #1a2340; padding: 15px; border-radius: 5px; margin-bottom: 20px; border-left: 4px solid #3F51B5;">
-                <h4 style="color: #8c9eff; margin-top: 0;">Sorgu İpuçları</h4>
-                <p>• Sorunuzu açık ve net bir şekilde ifade edin</p>
-                <p>• Sorularınızı tam cümleler halinde sorun</p>
-                <p>• Aşırı uzun sorular yerine birden fazla kısa soru sorun</p>
-                <p>• Yanıtın belirli bir formatta olmasını istiyorsanız belirtin</p>
+                <h4 style="color: #8c9eff; margin-top: 0;">{t('query_tips_title')}</h4>
+                <p>• {t('query_tip_1')}</p>
+                <p>• {t('query_tip_2')}</p>
+                <p>• {t('query_tip_3')}</p>
+                <p>• {t('query_tip_4')}</p>
             </div>
             """, unsafe_allow_html=True)
     
@@ -724,20 +1015,20 @@ with tab2:
     # Yanıt gösterimi
     if 'answer' in st.session_state and st.session_state['answer']:
         # Yanıtı göster
-        st.markdown('<h3 style="color:#2196F3;">Yanıt</h3>', unsafe_allow_html=True)
+        st.markdown(f'<h3 style="color:#2196F3;">{t("answer_title")}</h3>', unsafe_allow_html=True)
         st.markdown(f'<div style="background-color: #1a1a1a; padding: 20px; border-radius: 5px; border-left: 4px solid #2196F3;">{st.session_state["answer"]}</div>', unsafe_allow_html=True)
         
         # Kaynak belgeleri göster
-        st.markdown('<h3 style="color:#2196F3; margin-top: 20px;">Kaynak Belgeler</h3>', unsafe_allow_html=True)
+        st.markdown(f'<h3 style="color:#2196F3; margin-top: 20px;">{t("source_documents")}</h3>', unsafe_allow_html=True)
         
         if 'source_docs' in st.session_state and st.session_state['source_docs']:
             for i, doc in enumerate(st.session_state['source_docs']):
-                with st.expander(f"Kaynak {i+1}: {doc.metadata.get('filename', 'Bilinmeyen')} - Sayfa {doc.metadata.get('page', 'Bilinmeyen')}"):
+                with st.expander(f"{t('source')} {i+1}: {doc.metadata.get('filename', t('unknown'))} - {t('page')} {doc.metadata.get('page', t('unknown'))}"):
                     # Sol ve sağ sütunları oluştur
                     source_col1, source_col2 = st.columns([3, 1])
                     
                     with source_col1:
-                        st.markdown(f"**İçerik:**")
+                        st.markdown(f"**{t('content')}:**")
                         st.markdown(f"{doc.page_content}")
                     
                     with source_col2:
@@ -745,246 +1036,208 @@ with tab2:
                         for key, value in doc.metadata.items():
                             st.markdown(f"**{key}:** {value}")
         else:
-            st.info("Bu sorgu için kaynak belge bulunamadı.")
+            st.info(t("no_source_docs"))
 
-# 3. Koleksiyon İçeriği Sekmesi
-with tab3:
-    st.header("Koleksiyon İçeriği")
+# 4. Koleksiyon Yönetimi Sekmesi
+with tab4:
+    st.header(t("collections_title"))
+    st.markdown(t("collections_description"))
     
-    # Koleksiyon seçimi
-    try:
-        vector_db = VectorDatabase()
-        collections = vector_db.list_collections()
+    # Koleksiyonlari listele ve yönet
+    collections = vector_db.list_collections()
+    
+    if collections:
+        # Koleksiyon bilgilerini grid şeklinde görüntüle
+        st.markdown(f"### {t('available_collections')} ({len(collections)})")
         
-        if not collections:
-            st.info("Henüz hiç koleksiyon bulunamadı.")
-        else:
+        # Koleksiyonları 3 sütunlu düzende göster
+        cols = st.columns(3)
+        
+        for i, collection_name in enumerate(collections):
+            col = cols[i % 3]
+            
+            with col:
+                # Kart tarzında koleksiyon gösterimi
+                with st.container():
+                    st.markdown(f"""
+                    <div style="background-color: #1a273a; padding: 15px; border-radius: 5px; margin-bottom: 20px; border-left: 4px solid #2196F3;">
+                        <h4 style="color: #42a5f5; margin-top: 0;">{collection_name}</h4>
+                    """, unsafe_allow_html=True)
+                    
+                    # Metadata bilgilerini al (varsa)
+                    try:
+                        metadata = load_collection_metadata(collection_name)
+                        if metadata:
+                            num_docs = metadata.get("num_documents", "?")
+                            embedding_type = metadata.get("embedding_type", "?")
+                            embedding_model = metadata.get("embedding_model", "?")
+                            
+                            # Metadata bilgilerini göster
+                            st.markdown(f"""
+                            <p><strong>{t('document_count')}:</strong> {num_docs}</p>
+                            <p><strong>{t('embedding')}:</strong> {embedding_type} - {embedding_model}</p>
+                            """, unsafe_allow_html=True)
+                    except:
+                        st.markdown(f"<p>{t('no_metadata')}</p>", unsafe_allow_html=True)
+                    
+                    st.markdown("</div>", unsafe_allow_html=True)
+                    
+                    # Koleksiyon işlemleri
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        # İçeriğini sorgula butonu
+                        if st.button(f"🔍 {t('query_button')}", key=f"query_{collection_name}", use_container_width=True):
+                            # Sorgu sekmesine geç ve bu koleksiyonu seç
+                            st.session_state["selected_collection"] = collection_name
+                            st.session_state["redirect_to_query"] = True
+                            # Sayfayı yeniden yükle
+                            st.rerun()
+                    
+                    with col2:
+                        # Sil butonu
+                        if st.button(f"🗑️ {t('delete_button')}", key=f"delete_{collection_name}", use_container_width=True):
+                            # Silme onayını bir dialog olarak göster
+                            st.session_state["delete_confirm"] = collection_name
+                            st.rerun()
+        
+        # Silme onayı göster (varsa)
+        if "delete_confirm" in st.session_state and st.session_state["delete_confirm"]:
+            collection_to_delete = st.session_state["delete_confirm"]
+            
+            # Silme onay dialogu
+            with st.expander(f"⚠️ {t('delete_confirmation')}: {collection_to_delete}", expanded=True):
+                st.warning(f"{t('delete_warning')} '{collection_to_delete}'?")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button(f"✅ {t('confirm_delete')}", use_container_width=True):
+                        # Koleksiyonu sil
+                        try:
+                            vector_db.delete_collection(collection_to_delete)
+                            st.session_state["delete_confirm"] = None
+                            # Koleksiyon silindi mesajı
+                            st.success(f"'{collection_to_delete}' {t('collection_deleted')}")
+                            # Sayfa yeniden yükle
+                            time.sleep(1)
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"{t('delete_error')}: {str(e)}")
+                
+                with col2:
+                    if st.button(f"❌ {t('cancel_delete')}", use_container_width=True):
+                        # İptal et
+                        st.session_state["delete_confirm"] = None
+                        st.rerun()
+    else:
+        # Koleksiyon yoksa, bilgi mesajı göster
+        st.warning(t("no_collections_warning"))
+        # Yükleme bilgisi
+        st.markdown(f"""
+        <div style="background-color: #1a2340; padding: 15px; border-radius: 5px; margin-bottom: 20px; border-left: 4px solid #3F51B5;">
+            <h4 style="color: #8c9eff; margin-top: 0;">{t('add_document_title')}</h4>
+            <p>{t('add_document_instruction')}</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+# 5. İstatistikler Sekmesi
+with tab5:
+    st.header(t("stats_title"))
+    st.markdown(t("stats_description"))
+    
+    # İstatistikleri iki sütunlu göster
+    col1, col2 = st.columns(2)
+    
+    # Sol taraf: Genel istatistikler
+    with col1:
+        st.subheader(t("general_stats"))
+        
+        # Koleksiyon sayısı
+        collections = vector_db.list_collections()
+        total_collections = len(collections)
+        
+        # Toplam doküman sayısını ve vektör boyutunu hesapla
+        total_documents = 0
+        total_vectors = 0
+        embedding_models = set()
+        
+        for collection_name in collections:
+            try:
+                metadata = load_collection_metadata(collection_name)
+                if metadata:
+                    total_documents += metadata.get("num_documents", 0)
+                    total_vectors += metadata.get("num_vectors", 0)
+                    if "embedding_model" in metadata:
+                        embedding_models.add(metadata["embedding_model"])
+            except:
+                pass
+                
+        # İstatistikleri metriklerde göster
+        metrics_col1, metrics_col2 = st.columns(2)
+        
+        with metrics_col1:
+            st.metric(t("collection_count"), total_collections)
+            st.metric(t("document_count"), total_documents)
+        
+        with metrics_col2:
+            st.metric(t("vector_count"), total_vectors)
+            st.metric(t("embedding_model_count"), len(embedding_models))
+        
+        # Kullanılan embedding modellerini göster
+        if embedding_models:
+            st.subheader(t("embedding_models_used"))
+            for model in embedding_models:
+                st.markdown(f"- `{model}`")
+        
+    # Sağ taraf: Koleksiyon detayları
+    with col2:
+        st.subheader(t("collection_details"))
+        
+        if collections:
+            # Koleksiyon seçimi
             selected_collection = st.selectbox(
-                "Koleksiyon Seçiniz", 
+                t("select_collection_for_stats"), 
                 collections,
-                index=collections.index(collection_name) if collection_name in collections else 0,
-                key="koleksiyon_secim"
+                key="collection_stats_select"
             )
             
-            if st.button("Koleksiyon İçeriğini Göster", key="koleksiyon_goster"):
-                with st.spinner("Koleksiyon içeriği alınıyor..."):
-                    try:
-                        # Koleksiyonu yükle
-                        vector_db.load_collection(selected_collection)
-                        
-                        if vector_db.vector_store is None:
-                            st.error(f"'{selected_collection}' koleksiyonu yüklenirken hata oluştu.")
-                        else:
-                            try:
-                                # Koleksiyondaki tüm dokümanları al (en fazla 100 doküman)
-                                # Dummy embeddings sorunu için geçici çözüm
-                                from langchain_core.embeddings import Embeddings
-                                class FixedDummyEmbeddings(Embeddings):
-                                    def __init__(self, dim: int = 1536):
-                                        self.dim = dim
-                                    
-                                    def embed_documents(self, texts: List[str]) -> List[List[float]]:
-                                        return [[0.1] * self.dim for _ in texts]
-                                    
-                                    def embed_query(self, text: str) -> List[float]:
-                                        return [0.1] * self.dim
-                                
-                                # MetadataFiltering kullanarak dokümanları getirme
-                                if hasattr(vector_db.vector_store, "metadata_field_info"):
-                                    # Koleksiyon bilgilerini al
-                                    collection_metadata = load_collection_metadata(selected_collection)
-                                    embedding_dim = collection_metadata.get("embedding_dimension", 1536)
-                                    
-                                    # Mevcut embeddings modelini değiştir
-                                    if hasattr(vector_db.vector_store, 'embedding_function'):
-                                        original_embed_function = vector_db.vector_store.embedding_function
-                                        # Embeddings fonksiyonu çalışmıyorsa sabit bir fonksiyon kullan
-                                        vector_db.vector_store.embedding_function = FixedDummyEmbeddings(dim=embedding_dim)
-                                
-                                # Tüm dokümanları getirmeye çalış
-                                try:
-                                    docs = vector_db.vector_store.similarity_search("", k=100)
-                                except Exception as search_error:
-                                    logger.warning(f"Benzerlik aramasında hata: {str(search_error)}")
-                                    # Alternatif yöntem dene
-                                    try:
-                                        # Direkt VectorStore'un içindeki dokümanları al
-                                        if hasattr(vector_db.vector_store, "docstore"):
-                                            docstore_docs = list(vector_db.vector_store.docstore._dict.values())
-                                            if docstore_docs:
-                                                docs = docstore_docs[:100]  # En fazla 100 doküman
-                                            else:
-                                                docs = []
-                                        else:
-                                            # Boş bir query ile getir
-                                            docs = vector_db.vector_store.similarity_search(" ", k=100)
-                                    except Exception as alt_error:
-                                        logger.error(f"Alternatif doküman almada da hata: {str(alt_error)}")
-                                        st.error("Dokümanlar alınamadı. Embedding modeli uyumsuzluğu olabilir.")
-                                        st.info("Koleksiyon bilgileri başarıyla yüklendi, ancak içeriği görmek mümkün olmadı.")
-                                        
-                                        # Koleksiyon metadata dosyasını göster
-                                        st.subheader("Koleksiyon Metadata Dosyaları")
-                                        metadata_path = os.path.join("./indices", selected_collection, "metadata", "collection_info.json")
-                                        if os.path.exists(metadata_path):
-                                            with open(metadata_path, 'r') as f:
-                                                metadata_json = json.load(f)
-                                                st.json(metadata_json)
-                                        else:
-                                            st.warning("Metadata dosyası bulunamadı.")
-                                        
-                                        # Orijinal embedding fonksiyonunu geri yükle
-                                        if 'original_embed_function' in locals() and hasattr(vector_db.vector_store, 'embedding_function'):
-                                            vector_db.vector_store.embedding_function = original_embed_function
-                                        
-                                        # Koleksiyon metadata bilgilerini göster
-                                        docs = []  # Boş liste döndür
-                                
-                                # Orijinal embedding fonksiyonunu geri yükle
-                                if 'original_embed_function' in locals() and hasattr(vector_db.vector_store, 'embedding_function'):
-                                    vector_db.vector_store.embedding_function = original_embed_function
-                                
-                                if not docs:
-                                    st.warning(f"'{selected_collection}' koleksiyonunda doküman bulunamadı.")
-                                else:
-                                    st.success(f"{len(docs)} doküman bulundu.")
-                                    
-                                    # Dokümanları göster
-                                    doc_data = []
-                                    for i, doc in enumerate(docs):
-                                        filename = doc.metadata.get('filename', 'Bilinmiyor')
-                                        page = doc.metadata.get('page', 'Bilinmiyor')
-                                        filetype = doc.metadata.get('filetype', 'Bilinmiyor')
-                                        source = doc.metadata.get('source', 'Bilinmiyor')
-                                        
-                                        # Doküman içeriğinin ilk 100 karakteri
-                                        content = doc.page_content[:100] + "..." if len(doc.page_content) > 100 else doc.page_content
-                                        
-                                        doc_data.append({
-                                            "ID": i+1,
-                                            "Dosya": filename,
-                                            "Sayfa": page,
-                                            "Tür": filetype,
-                                            "İçerik Önizleme": content
-                                        })
-                                    
-                                    # DataFrame oluştur ve göster
-                                    df = pd.DataFrame(doc_data)
-                                    st.dataframe(df, use_container_width=True)
-                                    
-                                    # CSV olarak indirme butonu
-                                    csv = df.to_csv(index=False).encode('utf-8')
-                                    st.download_button(
-                                        "CSV Olarak İndir",
-                                        csv,
-                                        f"{selected_collection}_içerik.csv",
-                                        "text/csv",
-                                        key='download-csv'
-                                    )
-                            except Exception as e:
-                                st.error(f"Dokümanlar alınırken hata: {str(e)}")
-                                logger.error(f"Dokümanlar alınırken hata: {str(e)}")
-                                st.info("Koleksiyon yüklendi ancak içeriği görüntülenemiyor. Embedding modeli uyumsuzluğu olabilir.")
-                                
-                                # Koleksiyon metadata bilgilerini göster
-                                st.subheader("Koleksiyon Metadata Dosyaları")
-                                try:
-                                    metadata_path = os.path.join("./indices", selected_collection, "metadata", "collection_info.json")
-                                    if os.path.exists(metadata_path):
-                                        with open(metadata_path, 'r') as f:
-                                            metadata_json = json.load(f)
-                                            st.json(metadata_json)
-                                    else:
-                                        st.warning("Metadata dosyası bulunamadı.")
-                                except Exception as meta_error:
-                                    st.warning(f"Metadata okuma hatası: {str(meta_error)}")
-                    except Exception as e:
-                        st.error(f"Koleksiyon yüklenirken hata: {str(e)}")
-                        logger.error(f"Koleksiyon yüklenirken hata: {str(e)}")
-    except Exception as e:
-        st.error(f"Koleksiyon listesi alınırken hata: {str(e)}")
-        logger.error(f"Koleksiyon listesi alınırken hata: {str(e)}")
-        st.info("Bu hata genellikle henüz hiç koleksiyon oluşturulmadığında görülür. Lütfen önce bir PDF yükleyin.")
-    
-    # Koleksiyon Metadata Bölümü
-    st.subheader("Koleksiyon Metadata Dosyaları")
-    
-    try:
-        metadata = load_collection_metadata(selected_collection if 'selected_collection' in locals() else collection_name)
-        if metadata:
-            st.json(metadata)
-        else:
-            st.info("Bu koleksiyon için metadata bilgisi bulunamadı.")
-    except:
-        st.info("Koleksiyon metadata bilgisi yüklenemedi.")
-
-# 4. Koleksiyon İstatistikleri Sekmesi
-with tab4:
-    st.header("Koleksiyon İstatistikleri")
-    
-    # Yenileme düğmesi
-    if st.button("İstatistikleri Yenile"):
-        with st.spinner("Koleksiyon istatistikleri alınıyor..."):
+            # Seçilen koleksiyonun detayları
             try:
-                # VectorDatabase örneği oluştur
-                vector_db = VectorDatabase()
-                
-                # Koleksiyonları listele
-                collections = []
-                for item in os.listdir(vector_db.base_dir):
-                    item_path = os.path.join(vector_db.base_dir, item)
-                    if os.path.isdir(item_path):
-                        collections.append(item)
-                
-                if not collections:
-                    st.info("Henüz hiç koleksiyon bulunamadı.")
-                else:
-                    # Her koleksiyon için istatistikleri göster
-                    for collection in collections:
-                        st.subheader(f"Koleksiyon: {collection}")
+                metadata = load_collection_metadata(selected_collection)
+                if metadata:
+                    # Expandable detaylar
+                    with st.expander(f"{selected_collection} {t('details')}", expanded=True):
+                        # Temel bilgiler
+                        created_date = metadata.get('created_date', t('unknown'))
+                        num_docs = metadata.get('num_documents', 0)
+                        num_vectors = metadata.get('num_vectors', 0)
+                        chunk_size = metadata.get('chunk_size', t('unknown'))
+                        chunk_overlap = metadata.get('chunk_overlap', t('unknown'))
+                        embedding_type = metadata.get('embedding_type', t('unknown'))
+                        embedding_model = metadata.get('embedding_model', t('unknown'))
                         
-                        try:
-                            # İstatistikleri al
-                            stats = vector_db.get_collection_stats(collection)
-                            
-                            # İki sütunlu düzen
-                            col1, col2 = st.columns(2)
-                            
-                            with col1:
-                                st.write("**Temel Bilgiler**")
-                                st.write(f"Doküman Sayısı: {stats.get('document_count', 'Bilinmiyor')}")
-                                st.write(f"Depolama Tipi: {stats.get('storage_type', 'Bilinmiyor')}")
-                                st.write(f"İndeks Yolu: {stats.get('index_path', 'Bilinmiyor')}")
-                            
-                            # Metadata varsa göster
-                            if "metadata" in stats:
-                                with col2:
-                                    st.write("**Metadata Bilgileri**")
-                                    metadata = stats["metadata"]
-                                    
-                                    if "embedding_type" in metadata:
-                                        st.write(f"Embedding Tipi: {metadata['embedding_type']}")
-                                    
-                                    if "embedding_model" in metadata:
-                                        st.write(f"Embedding Modeli: {metadata['embedding_model']}")
-                                    
-                                    if "embedding_dimension" in metadata and metadata["embedding_dimension"]:
-                                        st.write(f"Embedding Boyutu: {metadata['embedding_dimension']}")
-                                    
-                                    if "created_at" in metadata:
-                                        st.write(f"Oluşturulma Tarihi: {metadata['created_at']}")
-                                
-                            # JSON görünümü
-                            with st.expander("Tüm İstatistikleri JSON Olarak Göster"):
-                                st.json(stats)
+                        # Metadata bilgilerini göster
+                        st.markdown(f"**{t('created_date')}:** {created_date}")
+                        st.markdown(f"**{t('document_count')}:** {num_docs}")
+                        st.markdown(f"**{t('vector_count')}:** {num_vectors}")
                         
-                        except Exception as e:
-                            st.error(f"'{collection}' koleksiyonu için istatistikler alınırken hata: {str(e)}")
-                            logger.error(f"Koleksiyon istatistikleri alınırken hata: {str(e)}")
-            
+                        # Embedding bilgileri
+                        st.markdown(f"**{t('embedding_provider')}:** {embedding_type}")
+                        st.markdown(f"**{t('embedding_model')}:** {embedding_model}")
+                        
+                        # Bölümleme bilgileri
+                        st.markdown(f"**{t('chunk_size')}:** {chunk_size}")
+                        st.markdown(f"**{t('chunk_overlap')}:** {chunk_overlap}")
+                        
+                        # Doküman bilgileri (varsa)
+                        if "documents" in metadata:
+                            st.subheader(t("documents_in_collection"))
+                            for doc in metadata["documents"]:
+                                st.markdown(f"- {doc.get('filename', t('unknown'))}")
             except Exception as e:
-                st.error(f"Koleksiyon istatistikleri alınırken hata: {str(e)}")
-                logger.error(f"Koleksiyon istatistikleri alınırken hata: {str(e)}")
+                st.error(f"{t('error_loading_metadata')}: {str(e)}")
+        else:
+            st.info(t("no_collections_for_stats"))
 
 # Footer
 st.markdown("---")

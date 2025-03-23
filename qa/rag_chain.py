@@ -54,10 +54,11 @@ from langchain_core.retrievers import BaseRetriever
 from vectorstore.vector_db import VectorDatabase
 
 # Varsayılan sorgu şablonu
-DEFAULT_QA_PROMPT = """
+DEFAULT_QA_PROMPT_TR = """
 Aşağıdaki bağlam bilgisi verilmiştir. Bu bilgiyi kullanarak sorulan soruyu yanıtla.
 Eğer yanıt bağlam içinde bulunmuyorsa, "Bu bilgi verilen dokümanlarda bulunmamaktadır." diye yanıt ver.
 Cevabını, bağlamdan gelen bilgilerden oluştur ve kendi bilgilerinle destekleme.
+DİKKAT: Yanıtını Türkçe olarak ver. 
 
 Bağlam:
 {context}
@@ -65,6 +66,20 @@ Bağlam:
 Soru: {question}
 
 Yanıt:
+"""
+
+DEFAULT_QA_PROMPT_EN = """
+The following context information is provided. Use this information to answer the question.
+If the answer is not found in the context, respond with "This information is not found in the provided documents."
+Form your answer based on the information from the context and do not supplement it with your own knowledge.
+IMPORTANT: Provide your answer in English.
+
+Context:
+{context}
+
+Question: {question}
+
+Answer:
 """
 
 # Dummy LLM sınıfı tanımlama
@@ -92,7 +107,8 @@ class RAGChain:
         temperature: float = 0,
         top_k: int = 4,
         base_url: str = "http://localhost:11434",
-        custom_prompt: Optional[str] = None
+        custom_prompt: Optional[str] = None,
+        language: str = "tr"  # Varsayılan dil Türkçe
     ):
         """
         RAG Zincirini başlatır.
@@ -105,6 +121,7 @@ class RAGChain:
             top_k: Sorgulanacak en iyi doküman sayısı
             base_url: Ollama API URL'i (Ollama kullanıldığında)
             custom_prompt: Özel sorgu şablonu (None ise varsayılan kullanılır)
+            language: Yanıt dili ("tr" veya "en")
         """
         self.vector_db = vector_db
         self.provider = provider
@@ -112,12 +129,21 @@ class RAGChain:
         self.temperature = temperature
         self.top_k = top_k
         self.base_url = base_url
+        self.language = language
         
         # LLM modelini başlat
         self.llm = self._initialize_llm()
         
-        # Özel şablon veya varsayılan şablon
-        prompt_template = custom_prompt or DEFAULT_QA_PROMPT
+        # Dile uygun şablonu seç veya özel şablonu kullan
+        if custom_prompt:
+            prompt_template = custom_prompt
+        else:
+            # Dil kontrolü
+            if self.language == "en":
+                prompt_template = DEFAULT_QA_PROMPT_EN
+            else:
+                prompt_template = DEFAULT_QA_PROMPT_TR
+        
         self.prompt = PromptTemplate(
             template=prompt_template,
             input_variables=["context", "question"]

@@ -20,9 +20,9 @@ from embeddings.embedder import DocumentEmbedder, EmbeddingConfig
 from utils.logging_config import get_logger
 logger = get_logger(__name__)
 
-# Önbellek mekanizması - aynı sorguları tekrar hesaplamamak için
-_cache = {}
-_rag_chains = {}  # Önceden oluşturulmuş RAG zincirlerini önbelleklemek için
+# Önbellek mekanizması - koleksiyon bazlı önbellekler
+_cache = {}  # { "collection_name": { "query_key": result } }
+_rag_chains = {}  # { "collection_name": { "config_key": rag_chain } }
 
 def run_query(
     query: str,
@@ -34,7 +34,8 @@ def run_query(
     top_k: int = 3,
     collection_name: str = "documents",
     openai_api_key: Optional[str] = None,
-    use_cache: bool = True
+    use_cache: bool = True,
+    language: str = "tr"  # Varsayılan dil Türkçe
 ) -> Tuple[Optional[str], Optional[List[Document]]]:
     """
     Bir koleksiyona karşı bir sorgu yürütür ve sonuçları döndürür.
@@ -50,30 +51,40 @@ def run_query(
         collection_name: Sorgulanacak koleksiyon adı
         openai_api_key: OpenAI API anahtarı (eğer OpenAI kullanılıyorsa)
         use_cache: Önbellek kullanılsın mı?
+        language: Yanıt dili ("tr" veya "en")
         
     Returns:
         Tuple[str, List[Document]]: Yanıt ve kaynak dokümanlar
     """
     start_time = time.time()
     
-    # Önbellek anahtarını oluştur
-    cache_key = f"{query}__{collection_name}__{llm_provider}__{llm_model}__{top_k}__{temperature}"
+    # Koleksiyon önbelleğini kontrol et veya oluştur
+    if collection_name not in _cache:
+        _cache[collection_name] = {}
     
-    # Önbellekte arama yap (eğer etkinse)
-    if use_cache and cache_key in _cache:
-        logger.info(f"Önbellekte bulunan sorgu yanıtı getiriliyor: '{query[:30]}...'")
-        return _cache[cache_key]
+    if collection_name not in _rag_chains:
+        _rag_chains[collection_name] = {}
     
-    logger.info(f"Sorgu başlatılıyor: '{query[:50]}...'")
+    # Önbellek anahtarını oluştur (dil bilgisini de ekle)
+    cache_key = f"{query}__{llm_provider}__{llm_model}__{top_k}__{temperature}__{language}"
+    
+    # Önbellekte arama yap (eğer etkinse) - SADECE bu koleksiyon için
+    collection_cache = _cache[collection_name]
+    if use_cache and cache_key in collection_cache:
+        logger.info(f"[{collection_name}] Önbellekte bulunan sorgu yanıtı getiriliyor: '{query[:30]}...'")
+        return collection_cache[cache_key]
+    
+    logger.info(f"[{collection_name}] Sorgu başlatılıyor: '{query[:50]}...'")
     
     try:
-        # RAG zinciri için önbellek anahtarını oluştur
-        rag_chain_key = f"{collection_name}__{llm_provider}__{llm_model}__{temperature}__{top_k}"
+        # RAG zinciri için önbellek anahtarını oluştur (dil bilgisini de ekle)
+        rag_chain_key = f"{llm_provider}__{llm_model}__{temperature}__{top_k}__{language}"
+        collection_rag_chains = _rag_chains[collection_name]
         
         # RAG zincirini başlatma
-        if rag_chain_key in _rag_chains:
-            logger.info("Önbellekte bulunan RAG zinciri kullanılıyor")
-            rag_chain = _rag_chains[rag_chain_key]
+        if rag_chain_key in collection_rag_chains:
+            logger.info(f"[{collection_name}] Önbellekte bulunan RAG zinciri kullanılıyor")
+            rag_chain = collection_rag_chains[rag_chain_key]
         else:
             # Vector veritabanını başlat ve koleksiyonu yükle
             vector_db = VectorDatabase()
@@ -92,7 +103,7 @@ def run_query(
                 db_embedding_model = metadata.get("embedding_model", "")
                 
                 if db_embedding_type and db_embedding_model:
-                    logger.info(f"Koleksiyon embedding: {db_embedding_type}/{db_embedding_model}")
+                    logger.info(f"[{collection_name}] Koleksiyon embedding: {db_embedding_type}/{db_embedding_model}")
                     
                     # Otomatik olarak koleksiyonla aynı embedding model kullan
                     if "Ollama" in db_embedding_type:
@@ -103,11 +114,11 @@ def run_query(
                         embedding_model = db_embedding_model
             
             # Koleksiyonu yükle
-            logger.info(f"Koleksiyon yükleniyor: {collection_name}")
+            logger.info(f"[{collection_name}] Koleksiyon yükleniyor")
             vector_db.load_collection(collection_name)
             
             # RAG zincirini oluştur
-            logger.info(f"RAG zinciri oluşturuluyor: {llm_provider}/{llm_model}")
+            logger.info(f"[{collection_name}] RAG zinciri oluşturuluyor: {llm_provider}/{llm_model}")
             
             if llm_provider == "ollama":
                 # Ollama için base_url'i belirle
@@ -119,7 +130,8 @@ def run_query(
                     model_name=llm_model,
                     temperature=temperature,
                     top_k=top_k,
-                    base_url=base_url
+                    base_url=base_url,
+                    language=language  # Dil bilgisini aktarıyoruz
                 )
             elif llm_provider == "openai":
                 if not openai_api_key:
@@ -134,48 +146,78 @@ def run_query(
                     provider="openai",
                     model_name=llm_model,
                     temperature=temperature,
-                    top_k=top_k
+                    top_k=top_k,
+                    language=language  # Dil bilgisini aktarıyoruz
                 )
             else:
                 logger.error(f"Desteklenmeyen LLM sağlayıcı: {llm_provider}")
                 return None, None
                 
-            # RAG zincirini önbelleğe al
-            _rag_chains[rag_chain_key] = rag_chain
+            # RAG zincirini önbelleğe al - SADECE bu koleksiyon için
+            collection_rag_chains[rag_chain_key] = rag_chain
         
         # Sorguyu yürüt
-        logger.info(f"Sorgu yürütülüyor...")
+        logger.info(f"[{collection_name}] Sorgu yürütülüyor...")
         result = rag_chain.ask(query)
         
-        # Sonuçları önbelleğe al
+        # Sonuçları önbelleğe al - SADECE bu koleksiyon için
         cached_result = (result["answer"], result["source_docs"])
         if use_cache:
-            _cache[cache_key] = cached_result
+            collection_cache[cache_key] = cached_result
         
         # Sorgu süresini ölç ve logla
         end_time = time.time()
         execution_time = end_time - start_time
-        logger.info(f"Sorgu tamamlandı, süre: {execution_time:.2f} saniye")
+        logger.info(f"[{collection_name}] Sorgu tamamlandı, süre: {execution_time:.2f} saniye")
         
         return cached_result
         
     except Exception as e:
-        logger.error(f"Sorgu sırasında hata: {str(e)}", exc_info=True)
+        logger.error(f"[{collection_name}] Sorgu sırasında hata: {str(e)}", exc_info=True)
         return None, None
 
-# RAG önbelleğini temizle
+# Tüm önbellekleri temizle
+def clear_all_caches():
+    """
+    Tüm RAG zinciri ve sorgu önbelleklerini temizler.
+    """
+    global _rag_chains, _cache
+    _rag_chains = {}
+    _cache = {}
+    logger.info("Tüm önbellekler temizlendi")
+
+# Belirli bir koleksiyonun önbelleğini temizle
+def clear_collection_cache(collection_name: str):
+    """
+    Belirli bir koleksiyonun RAG zinciri ve sorgu önbelleğini temizler.
+    
+    Args:
+        collection_name: Önbelleği temizlenecek koleksiyon adı
+    """
+    global _rag_chains, _cache
+    
+    # Koleksiyon önbelleklerini temizle
+    if collection_name in _rag_chains:
+        del _rag_chains[collection_name]
+        
+    if collection_name in _cache:
+        del _cache[collection_name]
+        
+    logger.info(f"[{collection_name}] Koleksiyon önbelleği temizlendi")
+
+# RAG önbelleğini temizle - geriye uyumluluk için
 def clear_rag_cache():
     """
-    RAG zinciri önbelleğini temizler.
+    Tüm RAG zinciri önbelleğini temizler.
     """
     global _rag_chains
     _rag_chains = {}
     logger.info("RAG zinciri önbelleği temizlendi")
 
-# Sorgu önbelleğini temizle
+# Sorgu önbelleğini temizle - geriye uyumluluk için
 def clear_query_cache():
     """
-    Sorgu önbelleğini temizler.
+    Tüm sorgu önbelleğini temizler.
     """
     global _cache
     _cache = {}
