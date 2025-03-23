@@ -1,0 +1,61 @@
+# PDF Dosyaları
+*.pdf
+temp_*.pdf
+
+# Vektör Veritabanı Dosyaları
+indices/
+indices*/
+*.faiss
+*.pkl
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Log dosyaları
+logs/
+*.log
+
+# Geçici dosyalar
+*.tmp
+*.temp
+temp_*
+.temp/
+
+# Ortam Dosyaları
+.env
+.venv
+venv/
+ENV/
+
+# IDE Dosyaları
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Sistemle ilgili dosyalar
+.DS_Store
+Thumbs.db
+
+# Streamlit dosyaları
+.streamlit/ 

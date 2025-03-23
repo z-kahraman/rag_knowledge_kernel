@@ -1,0 +1,37 @@
+# Core Dependencies
+langchain>=0.1.0
+langchain-community>=0.0.20
+langchain-openai>=0.0.5
+langchain-ollama>=0.0.1
+faiss-cpu>=1.7.4
+openai>=1.5.0
+pypdf>=3.17.0
+colorama>=0.4.6
+python-dotenv>=1.0.0
+pydantic>=2.5.0
+
+# Embedding Models
+sentence-transformers>=2.2.2
+InstructorEmbedding>=1.0.1
+
+# Vector Stores
+faiss-cpu>=1.7.4
+
+# Web UI
+streamlit>=1.43.0
+
+# Logging and Utilities
+tqdm>=4.66.1
+
+# Yardımcı Kütüphaneler
+tiktoken==0.5.1
+docx2txt>=0.8
+
+# Komut Satırı ve Formatlandırma Araçları
+argparse>=1.4.0
+tenacity>=8.2.3
+torch>=2.1.1
+
+# Opsiyonel Bağımlılıklar - şimdilik kullanılmayacak
+# langchain-openai==0.0.2
+# instructorembedding>=1.0.1 
